@@ -126,61 +126,117 @@ class WC_Generic_Payment_Gateway extends WC_Payment_Gateway {
      * @param int $order_id The order ID to process payment for.
      * @return array Result array with success/redirect parameters.
      */
-    public function process_payment($order_id) {
-        $order = wc_get_order($order_id);
-        
-        try {
-            // Initialize API client with new credentials
-            $api_client = new Generic_Payment_Gateway_API_Client(
-                $this->get_option('client_id'),
-                $this->get_option('client_secret'),
-                $this->get_option('api_endpoint'),
-                $this->get_option('account_uuid')
-            );
+            public function process_payment($order_id) {
+                $order = wc_get_order($order_id);
 
-            // Request e-transfer link
-            $response = $api_client->request_etransfer_link($order);
+                // Initialize API client with new credentials
+                $api_client = new Generic_Payment_Gateway_API_Client(
+                    $this->get_option('client_id'),
+                    $this->get_option('client_secret'),
+                    $this->get_option('api_endpoint'),
+                    $this->get_option('account_uuid')
+                );
 
-            if (is_wp_error($response)) {
-                throw new Exception($response->get_error_message());
+                // Request e-transfer link
+                $response = $api_client->request_etransfer_link($order);
+
+                // Check if API response is valid
+                if (is_wp_error($response)) {
+                    wc_add_notice($response->get_error_message(), 'error');
+                    return array(
+                        'result' => 'failure',
+                        'messages' => $response->get_error_message()
+                    );
+                }
+
+                // Check if the response indicates success and contains a valid URL
+                if (!isset($response['success']) || !$response['success'] || !isset($response['data']['url'])) {
+                    wc_add_notice(__('Please enter valid email address', 'generic-payment-gateway'), 'error');
+                    return array(
+                        'result' => 'failure',
+                        'messages' => __('Please enter valid email address', 'generic-payment-gateway')
+                    );
+                }
+
+                // Set order status and metadata together to reduce database writes
+                $order->update_status('pending', __('Awaiting e-transfer payment', 'generic-payment-gateway'));
+                $order->update_meta_data('_payment_url', $response['data']['url']);
+                $order->update_meta_data('_transaction_reference', $response['data']['transaction']['reference']);
+                $order->update_meta_data('_transaction_status', $response['data']['transaction']['status']);
+                $order->update_meta_data('_transaction_date', $response['data']['transaction']['created_at']);
+                $order->set_transaction_id($response['data']['transaction']['reference']);
+
+                // Save order once after all updates
+                $order->save();
+
+                // Reduce stock levels and empty cart after redirecting (could be moved to a background task if needed)
+                wc_reduce_stock_levels($order_id);
+                WC()->cart->empty_cart();
+
+                // Return success and redirect URL
+                return array(
+                    'result' => 'success',
+                    'redirect' => $order->get_checkout_order_received_url()
+                );
             }
 
-            if (!isset($response['success']) || !$response['success'] || !isset($response['data']['url'])) {
-                throw new Exception(__('Invalid response from payment gateway', 'generic-payment-gateway'));
-            }
+    
+    // public function process_payment($order_id) {
+    //     $order = wc_get_order($order_id);
 
-            // Update order status
-            $order->update_status('pending', __('Awaiting e-transfer payment', 'generic-payment-gateway'));
-            
-            // Store payment details in order metadata
-            $order->update_meta_data('_payment_url', $response['data']['url']);
-            $order->update_meta_data('_transaction_reference', $response['data']['transaction']['reference']);
-            $order->update_meta_data('_transaction_status', $response['data']['transaction']['status']);
-            $order->update_meta_data('_transaction_date', $response['data']['transaction']['created_at']);
-            
-            // Set transaction ID in WooCommerce
-            $order->set_transaction_id($response['data']['transaction']['reference']);
-            
-            $order->save();
-            
-            // Reduce stock levels
-            wc_reduce_stock_levels($order_id);
+    //     try {
+    //         // Initialize API client with new credentials
+    //         $api_client = new Generic_Payment_Gateway_API_Client(
+    //             $this->get_option('client_id'),
+    //             $this->get_option('client_secret'),
+    //             $this->get_option('api_endpoint'),
+    //             $this->get_option('account_uuid')
+    //         );
 
-            // Empty cart
-            WC()->cart->empty_cart();
+          
+    //         // Request e-transfer link
+    //         $response = $api_client->request_etransfer_link($order);
+           
+    //         if (is_wp_error($response)) {
+    //             throw new Exception($response->get_error_message());
+    //         }
 
-            return array(
-                'result' => 'success',
-                'redirect' => $order->get_checkout_order_received_url()
-            );
-        } catch (Exception $e) {
-            wc_add_notice($e->getMessage(), 'error');
-            return array(
-                'result' => 'failure',
-                'messages' => $e->getMessage()
-            );
-        }
-    }
+    //         if (!isset($response['success']) || !$response['success'] || !isset($response['data']['url'])) {
+    //             throw new Exception(__('Please enter valid email address', 'generic-payment-gateway'));
+    //         }
+
+    //         // Update order status
+    //         $order->update_status('pending', __('Awaiting e-transfer payment', 'generic-payment-gateway'));
+            
+    //         // Store payment details in order metadata
+    //         $order->update_meta_data('_payment_url', $response['data']['url']);
+    //         $order->update_meta_data('_transaction_reference', $response['data']['transaction']['reference']);
+    //         $order->update_meta_data('_transaction_status', $response['data']['transaction']['status']);
+    //         $order->update_meta_data('_transaction_date', $response['data']['transaction']['created_at']);
+            
+    //         // Set transaction ID in WooCommerce
+    //         $order->set_transaction_id($response['data']['transaction']['reference']);
+            
+    //         $order->save();
+            
+    //         // Reduce stock levels
+    //         wc_reduce_stock_levels($order_id);
+
+    //         // Empty cart
+    //         WC()->cart->empty_cart();
+
+    //         return array(
+    //             'result' => 'success',
+    //             'redirect' => $order->get_checkout_order_received_url()
+    //         );
+    //     } catch (Exception $e) {
+    //         wc_add_notice($e->getMessage(), 'error');
+    //         return array(
+    //             'result' => 'failure',
+    //             'messages' => $e->getMessage()
+    //         );
+    //     }
+    // }
 
     /**
      * Enqueue payment scripts and styles for the checkout page.
